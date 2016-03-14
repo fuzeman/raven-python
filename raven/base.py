@@ -87,11 +87,16 @@ class ClientState(object):
         self.status = self.ONLINE
         self.last_check = None
         self.retry_number = 0
+
         self.retry_after = 0
+        self.disabled = False
 
     def should_try(self):
         if self.status == self.ONLINE:
             return True
+
+        if self.disabled:
+            return False
 
         interval = self.retry_after or min(self.retry_number, 6) ** 2
 
@@ -100,11 +105,13 @@ class ClientState(object):
 
         return False
 
-    def set_fail(self, retry_after=0):
+    def set_fail(self, retry_after=0, disabled=False):
         self.status = self.ERROR
         self.retry_number += 1
         self.last_check = time.time()
+
         self.retry_after = retry_after
+        self.disabled = disabled
 
     def set_success(self):
         self.status = self.ONLINE
@@ -631,9 +638,14 @@ class Client(object):
 
     def _failed_send(self, exc, url, data):
         retry_after = 0
+        disabled = False
+
         if isinstance(exc, APIError):
             if isinstance(exc, RateLimited):
                 retry_after = exc.retry_after
+            elif exc.code == 401:
+                self.error_logger.error('Raven has been disabled (Unauthorized API Key)')
+                disabled = True
             self.error_logger.error(
                 'Sentry responded with an API error: %s(%s)',
                 type(exc).__name__, exc.message)
@@ -646,7 +658,10 @@ class Client(object):
             )
 
         self._log_failed_submission(data)
-        self.state.set_fail(retry_after=retry_after)
+        self.state.set_fail(
+            retry_after=retry_after,
+            disabled=disabled
+        )
 
     def _log_failed_submission(self, data):
         """
@@ -675,7 +690,10 @@ class Client(object):
 
         if not self.raise_send_errors and not self.state.should_try():
             data = self.decode(data)
-            self._log_failed_submission(data)
+
+            if not self.state.disabled:
+                self._log_failed_submission(data)
+
             return
 
         self.logger.debug('Sending message of length %d to %s', len(data), url)
