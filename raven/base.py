@@ -401,22 +401,11 @@ class Client(object):
                 'stacktrace': stack_info,
             })
 
-        if self.include_paths:
-            for frame in self._iter_frames(data):
-                if frame.get('in_app') is not None:
-                    continue
+        if 'stacktrace' in data:
+            self._mark_stacktrace_frames(data['stacktrace'])
 
-                path = frame.get('module')
-                if not path:
-                    continue
-
-                if path.startswith('raven.'):
-                    frame['in_app'] = False
-                else:
-                    frame['in_app'] = (
-                        any(path.startswith(x) for x in self.include_paths) and
-                        not any(path.startswith(x) for x in self.exclude_paths)
-                    )
+        if 'exception' in data:
+            self._mark_stacktrace_frames(data['exception']['values'][0].get('stacktrace'))
 
         if not culprit:
             culprit = self.transaction.peek()
@@ -484,6 +473,31 @@ class Client(object):
                 data.setdefault('breadcrumbs', {'values': crumbs})
 
         return data
+
+    def _mark_stacktrace_frames(self, stacktrace):
+        if not self.include_paths and not self.exclude_paths:
+            return
+
+        if not stacktrace or 'frames' not in stacktrace:
+            return
+
+        for frame in stacktrace['frames']:
+            if frame.get('in_app') is not None:
+                continue
+
+            path = frame.get('module')
+            if not path:
+                continue
+
+            if path.startswith('raven.'):
+                frame['in_app'] = False
+            else:
+                included = not self.include_paths or any(path.startswith(x) for x in self.include_paths)
+
+                frame['in_app'] = (
+                    included and not
+                    any(path.startswith(x) for x in self.exclude_paths)
+                )
 
     def transform(self, data):
         return transform(
